@@ -1,0 +1,400 @@
+---
+title: "Retail Forecasting Project"
+author: "Mohammad Nadzmi Ag Thomas"
+date: "2023-05-19"
+output: 
+  html_document:
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+library(fpp3)
+library(gridExtra)
+library(readabs) # install.packages("readabs")
+
+# Use your student ID as the seed
+set.seed(32518625)
+myseries <- aus_retail |>
+  # Remove discontinued series
+  filter(!(`Series ID` %in% c(
+    "A3349561R", "A3349883F", "A3349499L", "A3349902A",
+    "A3349588R", "A3349763L", "A3349372C", "A3349450X",
+    "A3349679W", "A3349378T", "A3349767W", "A3349451A"
+  ))) |>
+  # Select a series at random
+  filter(`Series ID` == sample(`Series ID`, 1))
+```
+
+# Introduction
+In this report, we will forecast real time series using ARIMA and ETS models. We will begin by analysing the data. Secondly, we will examine the stationarity of the data, and how the data can be transformed into stationary data (for ARIMA model). Thirdly, we will perform model selection for both ARIMA and ETS method. Then, we will run a model diagnostic on one of ARIMA and one of ETS model. Finally, we will re-train the model on full data, and perform 2 years forecasting and compare the performance against available online ABS data. 
+
+***
+\
+
+# Statistical Features Analysis
+
+Let's first plot our series and see if we can roughly identify any pattern.
+```{r, class.source = 'fold-hide'}
+myseries |> autoplot(Turnover) + labs(y = "Turnover (thousands)")
+```
+
+> From the plot above, it's apparent that our series is non-stationary as it shows upward trend and a possible seasonality.
+
+\
+
+#### Checking Seasonality
+```{r, class.source = 'fold-hide'}
+p1 <- myseries |>
+  filter(year(Month) > 2000) |>
+  gg_season(Turnover, labels = "right") +
+  labs(title = "Turnover (thousands) for each Months", y = "Turnover")
+
+p2 <- myseries |> gg_subseries(Turnover)
+
+gridExtra::grid.arrange(p1, p2)
+```
+
+> The first plot shows how Turnover vary montly for different years (line colour), and the second plot is similar to this, except we will plot the annual change of Turnover for each month. Both of these plot are useful to capture the relationship between Turnover and Month. From first plot, there's a spike of Turnover every December (especially on recent observation), and from the second plot, the mean (blue line) of Turnover during december is higher than the rest of the month. One of the contributing factor of this could be due to Christmas season and many special (such as black friday). This spike indicate the seasonality of our timeseries. 
+
+\
+
+### Checking Trend
+```{r, class.source = 'fold-hide'}
+myseries |>
+  ACF(Turnover, lag_max = 36) |>
+  autoplot()
+```
+
+> The plot above is an ACF plot, and it measures how observation (Turnover) is correlated to previous values, this is helpful for checking trend and seasonality. From the ACF plot above, we have a slowly decaying ACF and a large positve value on lag 1. This can be indication of trend, and also notice that there's a slight bump every 12 lags (12, 24, 36) which may indicate annual seasonality. 
+
+\
+
+### STL Decomposition
+```{r, class.source = 'fold-hide'}
+myseries |>
+  model(stl = STL(Turnover, robust = TRUE)) |>
+  components() |>
+  autoplot()
+```
+
+> STL decomposes timeseries into Trend (moving average), Seasonality (timeseries - trend), and Remainder (timeseries - trend - seasonality). Looking at the trend component, there's a clear upward trend. From seasonality component, there's a consistent spike and through indicating seasonality, and it should be noted that there's an increasing variation from 2010 onwards. Similar to the seasonality, the variation of remainder also increased from 2010 onwards. 
+
+*** 
+\
+
+# Data Transformation  
+Since we will be using ARIMA model for forecasting, we want to make sure our data can be transformed into stationary timeseries. From the analysis done on previous part, we know that trend and seasonality exist in our data. Now we wanna find out if differencing is required or not. Also, since the variation of seasonality components is increasing over the last few years, we will scale our target (Turnover) using logarithm to stabilize the variance. 
+
+```{r}
+# Check if differencing is required, if so what order of differencing
+myseries |> features(log(Turnover), unitroot_ndiffs)
+```
+> We get reported value of ndiffs = 1 from KPSS unitroot test. Hence, first order differencing is required.
+
+```{r}
+# Now let's check if seasonal differencing is also required (after first differencing is applied)
+myseries |> features(log(Turnover) |> difference(lag = 1), unitroot_nsdiffs)
+```
+> We get reported value of nsdiffs = 1 for seasonal differencing. Hence, first order seasonal differencing is required.
+
+*** 
+\
+
+# Model Selection
+
+```{r, class.source = 'fold-hide'}
+# The yearmonth (index) of last 24 (months) observation
+last_24 <- myseries$Month[nrow(myseries) - 24]
+
+# Split the data into training and testing
+train_data <- myseries |> filter(Month <= last_24)
+test_data <- myseries |> filter(Month > last_24)
+```
+
+### Finding ARIMA model
+From previous finding, we know that a first order differencing and a first order seasonal differencing are required to keep our data stationary. Therefore, $ARIMA(p,1,q)(P,1,Q)_{12}$ will be a good choice as our forecasting model. Now we will find the best model by testing different parameters.
+
+\
+
+#### Parameters Selection
+We use ACF and PACF plot to find the MA and the AR components respectively.
+```{r, class.source = 'fold-hide', warning=FALSE}
+myseries |> gg_tsdisplay(difference(log(Turnover), 12) |> difference(), plot_type = "partial", lag = 48) +
+  labs(title = "Double differenced log(Turnover)", y = "")
+```
+
+**Here are few potential ARIMA model:**
+
+* Looking at our ACF, the significant spike at lag 5 suggest a $MA(5)$ for the non-seasonal component, and the significant spike at lag 12 suggest a $MA(1)$ for the seasonal component. This give us a first potential model of $ARIMA(0,1,5)(0,1,1)_{12}$  
+* Looking at our PACF, the significant spike at lag 1 suggest an $AR(1)$ for the non-seasonal component, and the significant spike at lag 12, 24, 36 suggest an $AR(3)$ for the seasonal component. This give us another potential model of $ARIMA(1,1,0)(3,1,0)_{12}$  
+* We also included $ARIMA(1,0,5)(3,1,0)_{12}$ with drift to capture trend in data. Here we remove the first order differencing as the trend is captured using the drift   
+* We will also include automatically selected model for comparison. We will do this by setting stepwise=FALSE and approximation=FALSE to find the model with the lowest AICc value.  
+
+```{r}
+ARIMA_fit <- train_data |>
+  model(
+    Arima015011 = ARIMA(log(Turnover) ~ pdq(0, 1, 5) + PDQ(0, 1, 1, period = 12)),
+    Arima110310 = ARIMA(log(Turnover) ~ pdq(1, 1, 0) + PDQ(3, 1, 0, period = 12)),
+    ArimaDrift = ARIMA(log(Turnover) ~ 1 + pdq(1, 0, 5) + PDQ(3, 1, 0, period = 12)),
+    Auto = ARIMA(log(Turnover), stepwise = FALSE, approx = FALSE)
+  )
+```
+
+\
+
+#### AICc Comparison
+```{r, message=FALSE}
+ARIMA_fit |>
+  pivot_longer(Arima015011:Auto,
+    names_to = ".model",
+    values_to = "Params"
+  ) |>
+  select(.model:Params) |>
+  left_join(glance(ARIMA_fit) |> select(.model:BIC)) |>
+  arrange(AICc)
+```
+> The AICc quantifies the balance between model's goodness of fit and its complexity (or number of parameters). Model with low AICc tends to perform better than model with high AICc. Here, ARIMA model found automatically gives the best AICc, however we should also use other metrics before deciding on which model to use.
+
+\
+
+#### RMSE Comparison
+```{r}
+ARIMA_fit |>
+  forecast(h = 24) |>
+  accuracy(test_data) |>
+  select(.model, RMSE:MAPE) |>
+  arrange(RMSE)
+```
+
+> RMSE measure the prediction error of forecasted value against true value, it is a measure of model's predictive power. Alghough, ARIMA model found automatically give the lowest AICc, it return the highest RMSE after testing it on test set, and therefore might be a bad model choice.
+
+\
+
+### Finding ETS model
+Since we know the data has seasonality and trend, it will make sense to use Holt-Winter's method which capture trend and seasonality. However, for the sake of comparison we will use simple exponential smoothing, Holt's Linear method, Holt-Winter's method and automatically selected model.
+
+```{r}
+ETS_fit <- train_data |>
+  model(
+    Simple = ETS(Turnover ~ error("A") + trend("N") + season("N")),
+    HoltLinear = ETS(Turnover ~ error("A") + trend("A") + season("N")),
+    HoltLinearDamped = ETS(Turnover ~ error("A") + trend("Ad") + season("N")),
+    HoltWinterAdd = ETS(Turnover ~ error("A") + trend("A") + season("A")),
+    HoltWinterMul = ETS(Turnover ~ error("M") + trend("A") + season("M")),
+    HoltWinterDamped = ETS(Turnover ~ error("M") + trend("Ad") + season("M")),
+    Auto = ETS(Turnover)
+  )
+```
+\
+
+#### AICc Comparison
+```{r, message=FALSE}
+ETS_fit |>
+  pivot_longer(Simple:Auto,
+    names_to = ".model",
+    values_to = "Params"
+  ) |>
+  select(.model:Params) |>
+  left_join(glance(ETS_fit) |> select(.model:BIC)) |>
+  arrange(AICc)
+```
+> The model find automatically is the same as Holt Winter's Damped, and both of them have the lowest AICc value, meaning they have a good balance between goodness of fit and complexity.
+
+\
+
+#### RMSE Comparison
+
+```{r}
+ETS_fit |>
+  forecast(h = 24) |>
+  accuracy(test_data) |>
+  select(.model, RMSE:MAPE) |>
+  arrange(RMSE)
+```
+
+> Holt Winter's Damped have the second lowest RMSE value, but very close to the first one (Holt Winter's Additive). Therefore, Holt Winter's Damped will be a good model choice for forecasting as it has both low RMSE and AICc.
+
+
+*** 
+\
+
+# Model Diagnostic
+Now we will run diagnostic on one ARIMA model and one ETS model. For ARIMA model, we will choose $ARIMA(1,0,5)(3,1,0)_{12}$ with drift which gives the second lowest RMSE, and the second largest AICc. And for ETS model, we will choose $Holt\ Winter's\ Damped$ which gives the second lowest RMSE and the lowest AICc.
+
+### Diagnostic of ARIMA
+#### Estimated Parameters
+```{r, class.source = 'fold-hide'}
+ARIMA_selected <- ARIMA_fit |> select(ArimaDrift)
+ARIMA_selected |> report()
+```
+**Our model can be represented as the following:**  
+$$(1 + 0.9343·B)(1 + 0.5285·B^{12})y_{t} = 0.0077 + (1 - 0.2014·B +  0.0340·B^{2} - 0.0419·B^{3}  - 0.0481·B^{4} + 0.1740·B^{5})\varepsilon_t$$
+
+\
+
+#### Residual Diagnostic
+```{r, class.source = 'fold-hide'}
+ARIMA_selected |> gg_tsresiduals(lag = 36)
+```
+
+> Above, we use three different plot by using the residuals from our model to check whether the residuals are white noise or not. White noise residuals indicate that our model captures the underlying patterns and structures within the data, and by having non white noise residual, it could be a sign that further improvement could be made on our model. From the residual plot on the top, the lack of observable pattern can be an indication of a white noise residuals. The histogram shown is relatively normal. However, there's two significant spike (lag 20 and 30) out of 36. Therefore, just to be sure, we will perform Ljung-Box test.
+
+```{r}
+# Perform Ljung-Box test
+ARIMA_selected |>
+  augment() |>
+  features(.innov, ljung_box, lag = 24, dof = 4)
+```
+> Ljung-Box test is a statistical test used to assess whether residuals are white noise or not. It uses the autocorrelations of residuals to perform hypothesis testing, where null hypothesis is that there's no autocorrelation in the residuals (i.e. the residuals are whtie noise). The large p-value (p > 0.05) confirm that the residuals are indeed white noise. 
+
+\
+
+#### Forecast (2 years)
+```{r}
+# Only show the observation after year 2012 to keep the plot clean
+After2012 <- myseries |>
+  filter(year(Month) >= 2012) |>
+  select(-c(State, Industry))
+
+ARIMA_selected |>
+  forecast(h = 24) |>
+  autoplot(After2012) + labs(y = "Turnover (thousands)")
+```
+
+> The plot above show the forecasted values (blue line) against the true values (black line) from 2017 Jan to 2018 Dec. The blue shaded regions show the 80% and 95% prediction intervals. The plot is useful to see how good our model in forecasting future data, and as can be seen our ARIMA model forecast the data relatively well. 
+
+\
+
+### Diagnostic of ETS
+
+#### Estimated Parameters
+
+```{r, class.source = 'fold-hide'}
+ETS_selected <- ETS_fit |> select(HoltWinterDamped)
+
+ETS_selected |> report()
+```
+
+> The report above show the parameters for fitted Holt Winter's Damped method. The formulation will be quite tedious, and therefore for further information please visit [here](https://otexts.com/fpp3/holt-winters.html).
+
+\
+
+#### Residual Diagnostic
+```{r, class.source = 'fold-hide'}
+ETS_selected |> gg_tsresiduals()
+```
+
+> From the residual plot on the top, the lack of observable pattern can be an indication of a white noise residuals. The histogram shown is also relatively normal with no skew. However, there's one really significant spike (lag 12) out of 24. Therefore, just to be sure, we will perform Ljung-Box test.
+
+```{r}
+ETS_selected |>
+  augment() |>
+  features(.innov, ljung_box, lag = 24, dof = 4)
+```
+
+> From the small p-value (p < 0.05), we can't conclude that residuals are white noise. Therefore, there might be underlying patterns and structured not being captured by our model.
+
+\
+
+#### Forecast (2 years)
+
+```{r}
+ETS_selected |>
+  forecast(h = 24) |>
+  autoplot(After2012) + labs(y = "Turnover (thousands)")
+```
+> The plot show how our ETS model's forecasted value (blue line) fit against the true value (black line). As can be seen our model fit rather well.
+
+
+*** 
+\
+
+# Model Comparison
+
+### Predictive Errors Comparison
+```{r}
+ARIMA_selected |>
+  mutate(
+    HoltWinterDamped = ETS_selected |> pull()
+  ) |>
+  forecast(h = 24) |>
+  accuracy(test_data) |>
+  select(.model, RMSE:MAPE) |>
+  arrange(RMSE)
+```
+> Using few predictive errors obtained from forecasting against test set, it's clear that Holt Winter's Damped method give a better forecast. Holt Winter's Damped method gives lower RMSE, MAE and MAPE while ArimaDrift only give lower MPE.
+
+\
+
+### Out-Of-Sample Forecasting
+```{r}
+# Retrain the chosen models on the wholedataset
+FULL_fit <- myseries |>
+  model(
+    ArimaDrift = ARIMA(log(Turnover) ~ 1 + pdq(1, 0, 5) + PDQ(3, 1, 0, period = 12)),
+    HoltWinterDamped = ETS(Turnover ~ error("M") + trend("Ad") + season("M"))
+  )
+
+# Forecast two years out-of-sample
+Two_years_forecast <- FULL_fit |>
+  forecast(h = 24)
+
+# ARIMA prediction plot
+p1 <- Two_years_forecast |>
+  filter(.model == "ArimaDrift") |>
+  autoplot(level = 80) +
+  labs(title = "Arima Drift", y = "Turnover (thousands)")
+
+# ETS prediction plot
+p2 <- Two_years_forecast |>
+  filter(.model == "HoltWinterDamped") |>
+  autoplot(level = 80) + labs(title = "Holt Winter Damped", y = "Turnover (thousands)")
+
+# Show the plot
+grid.arrange(p1, p2)
+```
+
+> Both ARIMA and ETS model seems to produce similar point forecast by looking at the blue lines. However, the ETS model seems to have wider forecasting interval (i.e. less confidence).
+
+\
+
+**Now let's compare our out-of-sample forecast against up to date data**
+```{r, message=FALSE}
+# Getting up-to-date data from ABS
+seriesID <- unique(myseries["Series ID"])[[1]]
+newseries <- read_abs(series_id = seriesID)
+
+# Cleaning the data
+newseries <- newseries |>
+  select(value, date) |>
+  mutate(State = "Victoria", Industry = "Takeaway food services", date = yearmonth(date)) |>
+  as_tsibble(index = date, key = c(State, Industry)) |>
+  arrange(date)
+
+# Getting new two years observation following our original data
+last_month <- myseries |>
+  tail(1) |>
+  pull(Month)
+
+# Test set for our out of sample forecast
+test_set <- filter(newseries, date > last_month)[1:24, ] |> rename("Month" = date, "Turnover" = value)
+
+# Measure the errors
+Two_years_forecast |>
+  accuracy(test_set) |>
+  select(.model, RMSE:MAPE) |>
+  arrange(RMSE)
+```
+
+> Holt Winter's Damped method perform better than our Seasonal Arima with Drift as can be seen across the different error measure. However, both models have surprisingly twice as large as the RMSE from previous in-sample forecast. 
+
+\
+
+### Data Limitation
+Since we are forecasting 2 years period from 2019 Jan to 2020 Dec, we will also be forecasting for period where Covid-19 pandemic is undergoing (starting from 2020 Jan). Because of this, we will expect our models' goodness of fit to worsen after 2020 Jan (which explain the previous finding). And this is apparent by looking at the graph below.
+
+```{r, warning=FALSE, class.source = 'fold-hide'}
+Two_years_forecast |> autoplot(test_set, linewidth = 0.7) + labs(y = "Turnover (thousands)")
+```
+
+> The models fit relatively well up until 2020 Jan (when the Covid-19 pandemic started in Australia). Following that, the turnover (black line) drops significantly (possibly due to lockdown or public fear) and remains low (with some spike from lockdown being eased for awhile) until near the end of the year when it rises back up. 
