@@ -11,7 +11,7 @@ Using tools and techniques found in [Forecasting: Principles and Practice (3rd e
 
 # Tools and Techniques Explored:
 - [Seasonality Analysis](https://otexts.com/fpp3/seasonal-plots.html)
-- Trend Analysis with ACF
+- Trend Analysis with [ACF](https://otexts.com/fpp3/acf.html)
 - [STL Decomposition](https://otexts.com/fpp3/stl.html)
 - Data Transformation using [Unit Root Test](https://otexts.com/fpp3/stationarity.html)
 - Using [ACF and PACF to find MA and AR components](https://otexts.com/fpp3/seasonal-arima.html) (respectively) for the ARIMA  model
