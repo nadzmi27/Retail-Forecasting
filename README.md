@@ -20,5 +20,5 @@ Using tools and techniques found in [Forecasting: Principles and Practice (3rd e
 - Using [Holt-Winter’s](https://otexts.com/fpp3/holt-winters.html) method which captures trend and seasonality for the ETS model
 - Using AIC and RMSE on the ETS model for the same purpose as the ARIMA model
 - [Model Diagnostic](https://otexts.com/fpp3/diagnostics.html) such as _Residual Diagnostic_ and _Ljung-Box test_
-- Model Comparison between selected ARIMA and ETS using RMSE, MAE, MPE and MAPE
+- [Model Comparison](https://otexts.com/fpp3/arima-ets.html) between selected ARIMA and ETS using RMSE, MAE, MPE and MAPE
 - [Out-Of-Sample Forecasting](https://otexts.com/fpp3/accuracy.html)
