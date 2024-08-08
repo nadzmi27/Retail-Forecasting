@@ -1,4 +1,4 @@
-[📈 Click here to view the report on the browser](https://nadzmi27.github.io/Retail-Forecasting/)
+📈 [Click here to view the report on the browser](https://nadzmi27.github.io/Retail-Forecasting/)
 
 # Background
 The goal of this project is to forecast a time series of retail sales data using Exponential Smoothing ([ETS](https://otexts.com/fpp3/expsmooth.html)) and AutoRegressive Integrated Moving Average ([ARIMA](https://otexts.com/fpp3/arima.html)) models.
